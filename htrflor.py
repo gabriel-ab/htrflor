@@ -252,23 +252,38 @@ def imshow(img):
     IPython.display.display(i)
 
 
-def frame(image: np.ndarray | Path, width: int = 1024, height: int = 128) -> np.ndarray:
-    try:
-        if isinstance(image, (str, Path)):
-            image = cv.imread(str(image), cv.IMREAD_GRAYSCALE)
-        elif image.ndim == 3:
-            image = cv.cvtColor(image, cv.COLOR_RGB2GRAY)
-    except AttributeError:
-        raise TypeError("image should be numpy array or Path")
-    h, w = image.shape[:2]
+def normalize(images: np.ndarray, axis=(1,2)) -> np.ndarray:
+    batch = np.array(images).astype(np.float32)
+    std = batch.std(axis, keepdims=True)
+    std[std == 0] = 1
+    batch = (batch - batch.mean(axis, keepdims=True)) / std
+    return batch
 
+def preprocess(
+    image: np.ndarray | str,
+    width: int = 1024,
+    height: int = 128,
+    denoise: bool = True,
+    inverse: bool = False
+) -> np.ndarray:
+    def background(img) -> int:
+        u, i = np.unique(np.array(img).flatten(), return_inverse=True)
+        return int(u[np.argmax(np.bincount(i))])
+    
+    if isinstance(image, str):
+        image = cv.imread(str(image), cv.IMREAD_GRAYSCALE)
+    elif image.ndim == 3:
+        image = cv.cvtColor(image, cv.COLOR_RGB2GRAY)
+    if denoise:
+        cv.fastNlMeansDenoising(image, image, h=10)
+    if inverse:
+        image = 255 - image
+    h, w = image.shape[:2]
     scale = min(width / w, height / h)
     new_w, new_h = int(w * scale), int(h * scale)
-    canvas = np.full((height, width), 255, np.uint8)
-    cv.resize(
-        image, (new_w, new_h), canvas[:new_h, :new_w], interpolation=cv.INTER_AREA
-    )
-    return canvas
+    output = np.full((height, width), background(image), np.uint8)
+    cv.resize(image, (new_w, new_h), output[:new_h, :new_w], interpolation=cv.INTER_AREA)
+    return output
 
 
 def augmentation(
@@ -307,16 +322,6 @@ def augmentation(
         imgs[i] = cv.dilate(imgs[i], dilate_kernel, iterations=1)
 
     return imgs
-
-
-def normalize(
-    images: np.ndarray[np.uint8, (None, 1024, 128)],
-) -> np.ndarray[np.uint8, (None, 1024, 128)]:
-    batch = np.array(images).astype(np.float32)
-    std = batch.std((1, 2), keepdims=True)
-    std[std == 0] = 1
-    batch = (batch - batch.mean((1, 2), keepdims=True)) / std
-    return batch
 
 
 def callbacks(
@@ -430,7 +435,7 @@ class AiboxDataset(keras.utils.PyDataset):
         end = start + self.batch_size
         w, h = self.input_size
         x = np.array(
-            [frame(path, width=w, height=h) for path in self.table["path"][start:end]]
+            [preprocess(path, width=w, height=h, inverse=True) for path in self.table["path"][start:end]]
         )
         if "train" in self.split:
             x = augmentation(
