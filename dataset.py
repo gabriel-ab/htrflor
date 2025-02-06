@@ -6,7 +6,7 @@ import string
 import cv2 as cv
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
+from tqdm.auto import tqdm
 import h5py
 
 ImageBatch = np.ndarray[np.uint8, ("batch", "height", "width", "channels")]
@@ -121,37 +121,26 @@ target = 'aibox.hdf5'
 dfs = {
     'train': load_dataset_csv(DATASET_PATH, '70-train'),
     'test': load_dataset_csv(DATASET_PATH, '15-test'),
-    'val': load_dataset_csv(DATASET_PATH, '15-val')
+    'val': load_dataset_csv(DATASET_PATH, '15-val'),
 }
-partitions = dfs.keys()
-
-total = 0
-with h5py.File(target, "w") as hf:
-    for pt in partitions:
-        df = dfs[pt]
-        total += len(df)
-        hf.create_dataset(f"{pt}/dt", (len(df), 1024, 128, 1), np.uint8, compression=9)
-        hf.create_dataset(f"{pt}/gt", len(df), h5py.string_dtype(encoding='utf-8', length=max_text_length), compression=9)
-
 process = partial(preprocess, width=1024, height=128, denoise=True, inverse=True)
 
-def generate_inputs(dfs, batch_size):
+batch_per_save = 8*1024
+batch_per_process = 1024
+
+with h5py.File(target, "w") as hf:
     for part in dfs:
-        size = len(dfs[part])
-        for start in range(0, size, batch_size):
-            yield part, start, min(start+batch_size, size)
+        hf.create_dataset(f"{part}/dt", (len(dfs[part]), 1024, 128, 1), np.uint8, compression=9)
+        hf.create_dataset(f"{part}/gt", len(dfs[part]), h5py.string_dtype(encoding='utf-8', length=max_text_length), compression=9)
 
-save_rate = 1024
-batch_per_process = 256
-pbar = tqdm(total=total, desc="Processando Dataset")
-
-with mp.Pool(4) as pool:
-    for part, start, end in generate_inputs(dfs, save_rate):
-        x = pool.map(process, dfs[part]['path'][start:end], chunksize=batch_per_process)
-        x = np.array(x).transpose(0, 2, 1)[..., np.newaxis]
-        y = dfs[part]['word'][start:end].str.encode('utf-8')
-        with h5py.File(target, "a") as hf:
-            hf[f"{pt}/dt"][start:end] = x
-            hf[f"{pt}/gt"][start:end] = y
-            pbar.update(end-start)
-# %%
+with mp.Pool(8) as pool, tqdm(total=sum(map(len, dfs.values())), desc="Processando Dataset") as pbar:
+    for part in dfs:
+        for start in range(0, len(dfs[part]), batch_per_save):
+            end = start + batch_per_save
+            x = pool.map(process, dfs[part]['path'][start:end], chunksize=batch_per_process)
+            x = np.array(x).transpose(0, 2, 1)[..., np.newaxis]
+            y = dfs[part]['word'][start:end].str.encode('utf-8')
+            with h5py.File(target, "a") as hf:
+                hf[f"{part}/dt"][start:end] = x
+                hf[f"{part}/gt"][start:end] = y
+                pbar.update(len(y))
