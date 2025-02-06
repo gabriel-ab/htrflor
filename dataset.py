@@ -1,17 +1,10 @@
 # %%
-from functools import partial
-from itertools import islice
-import multiprocessing
+import multiprocessing as mp
 from pathlib import Path
 import string
-from typing import Literal
-import keras
-import numpy as np
 import cv2 as cv
+import numpy as np
 import pandas as pd
-from concurrent.futures import ProcessPoolExecutor
-from multiprocessing import Pool
-from tqdm.contrib.concurrent import process_map
 from tqdm import tqdm
 import h5py
 
@@ -88,6 +81,7 @@ def augmentation(
         imgs[i] = cv.dilate(imgs[i], dilate_kernel, iterations=1)
 
     return imgs
+
 class Tokenizer:
     VOCAB = string.printable[:95] + "áÁàÀâÂãÃçÇéÉèÈêÊíÍìÌîÎóÓòÒôÔõÕúÚùÙûÛß"
     UNK = "¤"
@@ -111,119 +105,17 @@ class Tokenizer:
 
     def untokenize(self, ids: list[int]) -> str:
         return "".join(self.id2tok[ids]).replace(self.PAD, "")
-class AiboxDataset(keras.utils.PyDataset):
-    def __init__(
-        self,
-        tokenizer: Tokenizer,
-        dataset_path: str = "raw/dataset/",
-        split: Literal["70-train", "15-test", "15-val"] = "70-train",
-        batch_size: int = 16,
-        workers=1,
-        use_multiprocessing=False,
-        max_queue_size=10,
-        input_size: tuple[int, int] = (1024, 128),
-    ):
-        super().__init__(workers, use_multiprocessing, max_queue_size)
-        df = pd.read_csv(
-            Path(dataset_path) / f"dataset-{split}/words-{split}.csv"
-        ).dropna()
-        df["path"] = dataset_path + df["path"]
-        self.table = df
-        self.split = split
-        self.tokenizer = tokenizer
-        self.batch_size = batch_size
-        self.input_size = input_size
 
-    def __getitem__(self, index):
-        start = index * self.batch_size
-        end = start + self.batch_size
-        w, h = self.input_size
-        x = np.array(
-            [preprocess(path, width=w, height=h, inverse=True) for path in self.table["path"][start:end]]
-        )
-        if "train" in self.split:
-            x = augmentation(
-                x,
-                rotation_range=1.5,
-                scale_range=0.05,
-                height_shift_range=0.025,
-                width_shift_range=0.05,
-            )
-        x = normalize(x)
-        x = x[..., None].transpose(0, 2, 1, 3)
-        y = np.array(
-            [self.tokenizer.tokenize(word) for word in self.table["word"][start:end]]
-        )
-        return x, y
-
-    def __len__(self):
-        return (len(self.table) / self.batch_size).__ceil__()
-
-    def text(self, index: int | None = None) -> list[str]:
-        if index is None:
-            return self.table["word"].to_list()
-        start = index * self.batch_size
-        end = start + self.batch_size
-        return self.table["word"].iloc[start:end].to_list()
 
 # %%
 DATASET_PATH = 'data/dataset/'
-MAX_TEXT_LENGTH = 128  # @param {type: "number"}
-BATCH_SIZE = 32
-# %%
-save_rate = 512
-split = "15-test"
-
-df = pd.read_csv(Path(DATASET_PATH) / f"dataset-{split}/words-{split}.csv").dropna()
-df["path"] = DATASET_PATH + df["path"]
-
-with h5py.File('aibox.hdf5', 'w') as hf:
-    data = hf.create_dataset('test', (len(df), 1024, 128, 1), np.uint8, compression=9)
-    batch = []
-    for i, image_path in enumerate(tqdm(df['path'], desc='Preprocessando (Teste)')):
-        image = preprocess(image_path, width=1024, height=128, denoise=True, inverse=True)
-        batch.append(image)
-        if batch and i % save_rate == 0:
-            start=i*save_rate
-            end=start+save_rate
-            data[start:end] = np.array(batch).transpose(0, 2, 1)[..., np.newaxis]
-            batch.clear()
-    # data[start:end] = np.array(batch).transpose(0, 2, 1)[..., np.newaxis]
-# %%
-
-def batched(iterable, n):
-    iterator = iter(iterable)
-    while batch := tuple(islice(iterator, n)):
-        yield batch
-
-def batch_slice(i, batch_size):
-    start = i * batch_size
-    stop = start + batch_size
-    return start, stop
-
-batch_size = 1024
-with h5py.File('aibox.hdf5', 'w') as hf:
-    for partition in ('train')
-    data = hf.create_dataset('test', (len(df), 1024, 128, 1), np.uint8, compression=9)
-    data = hf.create_dataset('test', (len(df), 1024, 128, 1), np.uint8, compression=9)
-    data = hf.create_dataset('test', (len(df), 1024, 128, 1), np.uint8, compression=9)
-    process = partial(preprocess, width=1024, height=128, denoise=True, inverse=True)
-
-    for i, batch in enumerate(tqdm(batched(df['path'], batch_size), desc='Preprocessando (Teste)', total=len(df)//batch_size +1)):
-        start, stop = batch_slice(i, batch_size=batch_size)
-        batch = process_map(process, batch)
-        data[start:stop] = np.array(batch).transpose(0, 2, 1)[..., np.newaxis]
-    # iterator = tqdm(pool.map(process, df['path'], chunksize=512), desc='Preprocessando (Teste)', total=len(df))
-    # for i, batch in enumerate(batched(iterator, 128)):
-    #     start, stop = batch_slice(i, 128)
-    #     data[start:stop] = np.array(batch).transpose(0, 2, 1)[..., np.newaxis]
 # %%
 def load_dataset_csv(dataset_path, split):
     df = pd.read_csv(Path(dataset_path) / f"dataset-{split}/words-{split}.csv").dropna()
     df["path"] = dataset_path + df["path"]
     return df
 
-max_text_length = MAX_TEXT_LENGTH
+max_text_length = 128
 target = 'aibox.hdf5'
 dfs = {
     'train': load_dataset_csv(DATASET_PATH, '70-train'),
@@ -240,26 +132,32 @@ with h5py.File(target, "w") as hf:
         hf.create_dataset(f"{pt}/dt", (len(df), 1024, 128, 1), np.uint8, compression=9)
         hf.create_dataset(f"{pt}/gt", len(df), h5py.string_dtype(encoding='utf-8', length=max_text_length), compression=9)
 
-pbar = tqdm(total=total, desc="Processando Dataset")
+pbar = tqdm(total=total, desc="Processando Dataset", position=0)
 batch_size = 1024
 
-process = partial(preprocess, width=1024, height=128, denoise=True, inverse=True)
+def process_and_save(part: str, start: int, end: int):
+    x = [
+        preprocess(path, width=1024, height=128, denoise=True, inverse=True)
+        for path in dfs[part]['path'][start:end]
+    ]
+    x = np.array(x).transpose(0, 2, 1)[..., np.newaxis]
+    y = dfs[part]['word'][start:end].str.encode('utf-8')
 
-def batched_index(size, batch_size):
-    for i in range(0, size, batch_size):
-        yield i, end if (end := i+batch_size) > size else size
+    with pbar.get_lock(), h5py.File(target, "a") as hf:
+        hf[f"{pt}/dt"][start:end] = x
+        hf[f"{pt}/gt"][start:end] = y
+        pbar.update(end-start)
 
-for pt in partitions:
-    for batch in range(0, len(dfs[pt]), batch_size):
-        pbar.set_postfix({'batch': batch}, refresh=True)
-        with multiprocessing.Pool(multiprocessing.cpu_count()) as pool:
-            images = pool.map(process, dfs[pt]['path'][batch:batch + batch_size])
-            pool.close()
-            pool.join()
+def generate_inputs(dfs, batch_size):
+    for part in dfs:
+        size = len(dfs[part])
+        for start in range(0, size, batch_size):
+            yield part, start, min(start+batch_size, size)
 
-        with h5py.File(target, "a") as hf:
-            hf[f"{pt}/dt"][batch:batch + batch_size] = np.array(images).transpose(0, 2, 1)[..., np.newaxis]
-            hf[f"{pt}/gt"][batch:batch + batch_size] = dfs[pt]['word'][batch:batch + batch_size].str.encode('utf-8')
-            pbar.update(batch_size)
-
+for part, start, end in generate_inputs(dfs, batch_size):
+    process_and_save(part, start, end)
+# %%
+with mp.Pool(mp.cpu_count(), initializer=tqdm.set_lock, initargs=(pbar.get_lock(),)) as pool:
+    pool.starmap(process_and_save, generate_inputs(dfs, batch_size))
+# %%
 # %%
