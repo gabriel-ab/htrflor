@@ -22,7 +22,7 @@ def preprocess(
     image: np.ndarray | str,
     width: int = 1024,
     height: int = 128,
-    denoise: bool = True,
+    denoise: bool = False,
     inverse: bool = False
 ) -> np.ndarray[np.uint8]:
     def background(img) -> int:
@@ -34,7 +34,7 @@ def preprocess(
     elif image.ndim == 3:
         image = cv.cvtColor(image, cv.COLOR_RGB2GRAY)
     if denoise:
-        cv.fastNlMeansDenoising(image, image, h=10)
+        cv.fastNlMeansDenoising(image, image, h=5)
     if inverse:
         image = 255 - image
     h, w = image.shape[:2]
@@ -132,21 +132,20 @@ with h5py.File(target, "w") as hf:
         hf.create_dataset(f"{pt}/dt", (len(df), 1024, 128, 1), np.uint8, compression=9)
         hf.create_dataset(f"{pt}/gt", len(df), h5py.string_dtype(encoding='utf-8', length=max_text_length), compression=9)
 
-pbar = tqdm(total=total, desc="Processando Dataset", position=0)
-batch_size = 1024
+# pbar = tqdm(total=total, desc="Processando Dataset", position=0)
+batch_size = 256
 
-def process_and_save(part: str, start: int, end: int):
+def process_and_save(args):
+    part, start, end = args
     x = [
         preprocess(path, width=1024, height=128, denoise=True, inverse=True)
         for path in dfs[part]['path'][start:end]
     ]
     x = np.array(x).transpose(0, 2, 1)[..., np.newaxis]
     y = dfs[part]['word'][start:end].str.encode('utf-8')
-
-    with pbar.get_lock(), h5py.File(target, "a") as hf:
+    with h5py.File(target, "a") as hf:
         hf[f"{pt}/dt"][start:end] = x
         hf[f"{pt}/gt"][start:end] = y
-        pbar.update(end-start)
 
 def generate_inputs(dfs, batch_size):
     for part in dfs:
@@ -154,10 +153,13 @@ def generate_inputs(dfs, batch_size):
         for start in range(0, size, batch_size):
             yield part, start, min(start+batch_size, size)
 
-for part, start, end in generate_inputs(dfs, batch_size):
+batches = list(generate_inputs(dfs, batch_size))
+
+for part, start, end in tqdm(batches, desc="Processando Dataset"):
     process_and_save(part, start, end)
 # %%
-with mp.Pool(mp.cpu_count(), initializer=tqdm.set_lock, initargs=(pbar.get_lock(),)) as pool:
-    pool.starmap(process_and_save, generate_inputs(dfs, batch_size))
-# %%
+# from tqdm.contrib.concurrent import thread_map
+# thread_map(process_and_save, list(generate_inputs(dfs, batch_size)), desc="Processando Dataset", chunksize=8, max_workers=4)
+# with mp.Pool(mp.cpu_count(), initializer=tqdm.set_lock, initargs=(pbar.get_lock(),)) as pool:
+#     pool.starmap(process_and_save, generate_inputs(dfs, batch_size))
 # %%
