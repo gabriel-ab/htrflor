@@ -2,14 +2,12 @@
 import random
 import string
 import unicodedata
-from pathlib import Path
 from typing import Literal
 
-import cv2 as cv
 import editdistance
+import h5py
 import keras
 import numpy as np
-import pandas as pd
 import tensorflow as tf
 from keras import Model
 from keras.api.callbacks import (
@@ -31,7 +29,7 @@ from keras.api.layers import (
     PReLU,
     Reshape,
 )
-from keras.api.optimizers import AdamW
+from keras.api.optimizers import AdamW, RMSprop
 
 ImageBatch = np.ndarray[np.uint8, ("batch", "height", "width", "channels")]
 
@@ -52,15 +50,15 @@ class Tokenizer:
     PAD = "¶"
 
     def __init__(self, vocab: str = VOCAB, maxlen=None):
-        self.vocab = self.UNK + vocab + self.PAD
-        self.unkid = 0
-        self.padid = -1
+        self.vocab = self.PAD + self.UNK + vocab
+        self.unkid = 1
+        self.padid = 0
         self.maxlen = maxlen
         self.tok2id = dict(map(reversed, enumerate(self.vocab)))
         self.id2tok = np.array(list(self.vocab))
 
     def tokenize(self, text: str) -> list[int]:
-        ids = np.array([self.tok2id.get(x, 0) for x in text])
+        ids = np.array([self.tok2id.get(x, self.unkid) for x in text])
         if self.maxlen is None:
             return ids
         if len(ids) > self.maxlen:
@@ -205,7 +203,7 @@ def HtrFlor(input_size: tuple[int, int, int], logits: int) -> Model:
     cnn = Conv2D(
         filters=56,
         kernel_size=(2, 4),
-        strides=(1, 4),
+        strides=(2, 4),
         padding="same",
         kernel_initializer="he_uniform",
     )(cnn)
@@ -325,102 +323,72 @@ def ocr_metrics(
 
     return metrics
 
+def normalize(images: np.ndarray, axis=(1,2)) -> np.ndarray:
+    batch = np.array(images).astype(np.float32)
+    std = batch.std(axis, keepdims=True)
+    std[std == 0] = 1
+    batch = (batch - batch.mean(axis, keepdims=True)) / std
+    return batch
 
 class AiboxDataset(keras.utils.PyDataset):
     def __init__(
         self,
+        path: str,
+        split: Literal['train', 'val', 'test'],
         tokenizer: Tokenizer,
-        dataset_path: str = "raw/dataset/",
-        split: Literal["70-train", "15-test", "15-val"] = "70-train",
         batch_size: int = 16,
         workers=1,
         use_multiprocessing=False,
         max_queue_size=10,
-        input_size: tuple[int, int] = (1024, 128),
     ):
         super().__init__(workers, use_multiprocessing, max_queue_size)
-        df = pd.read_csv(
-            Path(dataset_path) / f"dataset-{split}/words-{split}.csv"
-        ).dropna()
-        df["path"] = dataset_path + df["path"]
-        self.table = df
+        self.path = path
         self.split = split
-        self.tokenizer = tokenizer
         self.batch_size = batch_size
-        self.input_size = input_size
+        self.tokenizer = tokenizer
 
     def __getitem__(self, index):
         start = index * self.batch_size
         end = start + self.batch_size
-        w, h = self.input_size
-        x = np.array(
-            [preprocess(path, width=w, height=h, inverse=True) for path in self.table["path"][start:end]]
-        )
-        if "train" in self.split:
-            x = augmentation(
-                x,
-                rotation_range=1.5,
-                scale_range=0.05,
-                height_shift_range=0.025,
-                width_shift_range=0.05,
-            )
-        x = normalize(x)
-        x = x[..., None].transpose(0, 2, 1, 3)
-        y = np.array(
-            [self.tokenizer.tokenize(word) for word in self.table["word"][start:end]]
-        )
+        with h5py.File(self.path) as hf:
+            x = hf[self.split]['dt'][start:end]
+            x = normalize(x)
+            y = hf[self.split]['gt'][start:end]
+            y = np.array([self.tokenizer.tokenize(word.decode()) for word in y])
         return x, y
 
     def __len__(self):
-        return (len(self.table) / self.batch_size).__ceil__()
-
-    def text(self, index: int | None = None) -> list[str]:
-        if index is None:
-            return self.table["word"].to_list()
-        start = index * self.batch_size
-        end = start + self.batch_size
-        return self.table["word"].iloc[start:end].to_list()
+        with h5py.File(self.path) as hf:
+            return (len(hf[self.split]['gt']) / self.batch_size).__ceil__()
 
 # %%
 INPUT_SIZE = (1024, 128, 1)
 MAX_TEXT_LENGTH = 128  # @param {type: "number"}
-LEARNING_RATE = 0.001  # @param {type: "number"}
+LEARNING_RATE = 0.01  # @param {type: "number"}
 tokenizer = Tokenizer(maxlen=MAX_TEXT_LENGTH)
 htrflor = HtrFlor(input_size=INPUT_SIZE, logits=len(tokenizer.vocab))
 htrflor.compile(
     optimizer=AdamW(learning_rate=LEARNING_RATE, weight_decay=0.1),
     loss=keras.losses.CTC(),
+    # metrics=["precision"]
 )
 htrflor.summary()
 # %%
-BATCH_SIZE = 32  # @param {type: "number"}
-TRAIN_DATASET_WORKERS = 2  # @param {type: "number"}
-
-train_dataset = AiboxDataset(
-    tokenizer,
-    dataset_path=DATASET_PATH,
-    split="70-train",
-    use_multiprocessing=TRAIN_DATASET_WORKERS > 1,
-    workers=TRAIN_DATASET_WORKERS,
-    batch_size=BATCH_SIZE,
-    input_size=INPUT_SIZE[:2],
-)
-val_dataset = AiboxDataset(
-    tokenizer,
-    dataset_path=DATASET_PATH,
-    split="15-val",
-    batch_size=BATCH_SIZE,
-    input_size=INPUT_SIZE[:2],
-)
-test_dataset = AiboxDataset(
-    tokenizer,
-    dataset_path=DATASET_PATH,
-    split="15-test",
-    batch_size=BATCH_SIZE,
-    input_size=INPUT_SIZE[:2],
-)
+BATCH_SIZE = 16  # @param {type: "number"}
+TRAIN_DATASET_WORKERS = 1  # @param {type: "number"}
+DATASET_PATH = 'data/sample.hdf5'
+train_dataset = AiboxDataset(DATASET_PATH, 
+                             split="train",
+                             tokenizer=tokenizer,
+                             use_multiprocessing=TRAIN_DATASET_WORKERS > 1,
+                             workers=TRAIN_DATASET_WORKERS,
+                             batch_size=BATCH_SIZE)
+val_dataset = AiboxDataset(DATASET_PATH, split="val", batch_size=BATCH_SIZE, tokenizer=tokenizer)
+test_dataset = AiboxDataset(DATASET_PATH, split="test", batch_size=BATCH_SIZE, tokenizer=tokenizer)
 # %%
-EPOCHS = 10  # @param {type: "number"}
+len(test_dataset)
+# %%
+EPOCHS = 2  # @param {type: "number"}
 LOGFILE = "epochs.log"  # @param {type: "string"}
 CHECKPOINT = "htrflor-checkpoint.weights.h5"  # @param {type: "string"}
 EARLY_STOPING_TOLERANCE = 20  # @param {type: "number"}
