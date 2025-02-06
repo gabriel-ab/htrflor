@@ -141,10 +141,13 @@ def generate_inputs(dfs, batch_size):
         for start in range(0, size, batch_size):
             yield part, start, min(start+batch_size, size)
 
+save_rate = 1024
+batch_per_process = 256
 pbar = tqdm(total=total, desc="Processando Dataset")
-with mp.Pool(8) as pool:
-    for part, start, end in generate_inputs(dfs, 1024):
-        x = pool.map(process, dfs[part]['path'][start:end], chunksize=32)
+
+with mp.Pool(4) as pool:
+    for part, start, end in generate_inputs(dfs, save_rate):
+        x = pool.map(process, dfs[part]['path'][start:end], chunksize=batch_per_process)
         x = np.array(x).transpose(0, 2, 1)[..., np.newaxis]
         y = dfs[part]['word'][start:end].str.encode('utf-8')
         with h5py.File(target, "a") as hf:
