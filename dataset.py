@@ -1,4 +1,5 @@
 # %%
+from functools import partial
 import multiprocessing as mp
 from pathlib import Path
 import string
@@ -132,20 +133,7 @@ with h5py.File(target, "w") as hf:
         hf.create_dataset(f"{pt}/dt", (len(df), 1024, 128, 1), np.uint8, compression=9)
         hf.create_dataset(f"{pt}/gt", len(df), h5py.string_dtype(encoding='utf-8', length=max_text_length), compression=9)
 
-# pbar = tqdm(total=total, desc="Processando Dataset", position=0)
-batch_size = 256
-
-def process_and_save(args):
-    part, start, end = args
-    x = [
-        preprocess(path, width=1024, height=128, denoise=True, inverse=True)
-        for path in dfs[part]['path'][start:end]
-    ]
-    x = np.array(x).transpose(0, 2, 1)[..., np.newaxis]
-    y = dfs[part]['word'][start:end].str.encode('utf-8')
-    with h5py.File(target, "a") as hf:
-        hf[f"{pt}/dt"][start:end] = x
-        hf[f"{pt}/gt"][start:end] = y
+process = partial(preprocess, width=1024, height=128, denoise=True, inverse=True)
 
 def generate_inputs(dfs, batch_size):
     for part in dfs:
@@ -153,13 +141,14 @@ def generate_inputs(dfs, batch_size):
         for start in range(0, size, batch_size):
             yield part, start, min(start+batch_size, size)
 
-batches = list(generate_inputs(dfs, batch_size))
-
-for part, start, end in tqdm(batches, desc="Processando Dataset"):
-    process_and_save(part, start, end)
-# %%
-# from tqdm.contrib.concurrent import thread_map
-# thread_map(process_and_save, list(generate_inputs(dfs, batch_size)), desc="Processando Dataset", chunksize=8, max_workers=4)
-# with mp.Pool(mp.cpu_count(), initializer=tqdm.set_lock, initargs=(pbar.get_lock(),)) as pool:
-#     pool.starmap(process_and_save, generate_inputs(dfs, batch_size))
+pbar = tqdm(total=total, desc="Processando Dataset")
+with mp.Pool(4) as pool:
+    for part, start, end in generate_inputs(dfs, 1024):
+        x = pool.map(process, dfs[part]['path'][start:end], chunksize=32)
+        x = np.array(x).transpose(0, 2, 1)[..., np.newaxis]
+        y = dfs[part]['word'][start:end].str.encode('utf-8')
+        with h5py.File(target, "a") as hf:
+            hf[f"{pt}/dt"][start:end] = x
+            hf[f"{pt}/gt"][start:end] = y
+            pbar.update(end-start)
 # %%
