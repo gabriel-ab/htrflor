@@ -142,7 +142,7 @@ def generate_inputs(dfs, batch_size):
             yield part, start, min(start+batch_size, size)
 
 pbar = tqdm(total=total, desc="Processando Dataset")
-with mp.Pool(4) as pool:
+with mp.Pool(8) as pool:
     for part, start, end in generate_inputs(dfs, 1024):
         x = pool.map(process, dfs[part]['path'][start:end], chunksize=32)
         x = np.array(x).transpose(0, 2, 1)[..., np.newaxis]
