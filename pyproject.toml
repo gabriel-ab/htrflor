@@ -7,10 +7,10 @@ requires-python = ">=3.11"
 dependencies = [
     "editdistance>=0.8.1",
     "keras>=2.14.0",
-    "numpy>=2.2.2",
+    "numpy>=2.0.2",
     "opencv-python>=4.11.0.86",
     "pandas>=2.2.3",
-    "tensorflow>=2.14.0",
+    "tensorflow[and-cuda]>=2.18.0",
     "tqdm>=4.67.1",
 ]
 
