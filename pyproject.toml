@@ -6,10 +6,15 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "editdistance>=0.8.1",
-    "ipywidgets>=8.1.5",
     "keras>=2.14.0",
     "numpy>=2.2.2",
     "opencv-python>=4.11.0.86",
     "pandas>=2.2.3",
     "tensorflow>=2.14.0",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.29.5",
+    "ipywidgets>=8.1.5",
 ]
