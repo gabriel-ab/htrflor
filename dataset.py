@@ -9,8 +9,6 @@ import pandas as pd
 from tqdm.auto import tqdm
 import h5py
 
-ImageBatch = np.ndarray[np.uint8, ("batch", "height", "width", "channels")]
-
 
 def normalize(images: np.ndarray, axis=(1,2)) -> np.ndarray:
     batch = np.array(images).astype(np.float32)
@@ -45,43 +43,6 @@ def preprocess(
     cv.resize(image, (new_w, new_h), output[:new_h, :new_w], interpolation=cv.INTER_AREA)
     return output
 
-
-def augmentation(
-    imgs: ImageBatch,
-    rotation_range: int = 0,
-    scale_range: int = 0,
-    height_shift_range: int = 0,
-    width_shift_range: int = 0,
-    dilate_range: int = 1,
-    erode_range: int = 1,
-):
-    """Apply variations to a list of images (rotate, width and height shift, scale, erode, dilate)"""
-
-    imgs = imgs.astype(np.float32)
-    _, h, w = imgs.shape
-
-    dilate_kernel = np.ones((int(np.random.uniform(1, dilate_range)),), np.uint8)
-    erode_kernel = np.ones((int(np.random.uniform(1, erode_range)),), np.uint8)
-    height_shift = np.random.uniform(-height_shift_range, height_shift_range)
-    rotation = np.random.uniform(-rotation_range, rotation_range)
-    scale = np.random.uniform(1 - scale_range, 1)
-    width_shift = np.random.uniform(-width_shift_range, width_shift_range)
-
-    trans_map = np.float32([[1, 0, width_shift * w], [0, 1, height_shift * h]])
-    rot_map = cv.getRotationMatrix2D((w // 2, h // 2), rotation, scale)
-
-    trans_map_aff = np.r_[trans_map, [[0, 0, 1]]]
-    rot_map_aff = np.r_[rot_map, [[0, 0, 1]]]
-    affine_mat = rot_map_aff.dot(trans_map_aff)[:2, :]
-
-    for i in range(len(imgs)):
-        imgs[i] = cv.warpAffine(
-            imgs[i], affine_mat, (w, h), flags=cv.INTER_NEAREST, borderValue=255
-        )
-        imgs[i] = cv.erode(imgs[i], erode_kernel, iterations=1)
-        imgs[i] = cv.dilate(imgs[i], dilate_kernel, iterations=1)
-
-    return imgs
 
 class Tokenizer:
     VOCAB = string.printable[:95] + "áÁàÀâÂãÃçÇéÉèÈêÊíÍìÌîÎóÓòÒôÔõÕúÚùÙûÛß"

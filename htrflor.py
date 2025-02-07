@@ -7,6 +7,7 @@ from typing import Literal
 import editdistance
 import h5py
 import keras
+from matplotlib import pyplot as plt
 import numpy as np
 import tensorflow as tf
 from keras import Model
@@ -31,7 +32,7 @@ from keras.api.layers import (
 )
 from keras.api.optimizers import AdamW, RMSprop
 
-ImageBatch = np.ndarray[np.uint8, ("batch", "height", "width", "channels")]
+ImageBatch = np.ndarray[("batch", "height", "width", "channels"), np.uint8]
 
 SEED = 42
 random.seed(SEED)
@@ -281,9 +282,7 @@ def callbacks(
     ]
 
 
-def ocr_metrics(
-    predicts, ground_truth, norm_accentuation=False, norm_punctuation=False
-):
+def ocr_metrics(ground_truth, predicts, norm_accentuation=False, norm_punctuation=False):
     """Calculate Character Error Rate (CER), Word Error Rate (WER) and Sequence Error Rate (SER)"""
 
     if len(predicts) == 0 or len(ground_truth) == 0:
@@ -332,6 +331,43 @@ def normalize(images: np.ndarray, axis=(1,2)) -> np.ndarray:
     batch = (batch - batch.mean(axis, keepdims=True)) / std
     return batch
 
+def augmentation(
+    imgs: ImageBatch,
+    rotation_range: int = 0,
+    scale_range: int = 0,
+    height_shift_range: int = 0,
+    width_shift_range: int = 0,
+    dilate_range: int = 1,
+    erode_range: int = 1,
+):
+    """Apply variations to a list of images (rotate, width and height shift, scale, erode, dilate)"""
+
+    imgs = imgs.astype(np.float32)
+    _, h, w = imgs.shape
+
+    dilate_kernel = np.ones((int(np.random.uniform(1, dilate_range)),), np.uint8)
+    erode_kernel = np.ones((int(np.random.uniform(1, erode_range)),), np.uint8)
+    height_shift = np.random.uniform(-height_shift_range, height_shift_range)
+    rotation = np.random.uniform(-rotation_range, rotation_range)
+    scale = np.random.uniform(1 - scale_range, 1)
+    width_shift = np.random.uniform(-width_shift_range, width_shift_range)
+
+    trans_map = np.float32([[1, 0, width_shift * w], [0, 1, height_shift * h]])
+    rot_map = cv.getRotationMatrix2D((w // 2, h // 2), rotation, scale)
+
+    trans_map_aff = np.r_[trans_map, [[0, 0, 1]]]
+    rot_map_aff = np.r_[rot_map, [[0, 0, 1]]]
+    affine_mat = rot_map_aff.dot(trans_map_aff)[:2, :]
+
+    for i in range(len(imgs)):
+        imgs[i] = cv.warpAffine(
+            imgs[i], affine_mat, (w, h), flags=cv.INTER_NEAREST, borderValue=255
+        )
+        imgs[i] = cv.erode(imgs[i], erode_kernel, iterations=1)
+        imgs[i] = cv.dilate(imgs[i], dilate_kernel, iterations=1)
+
+    return imgs
+
 class AiboxDataset(keras.utils.PyDataset):
     def __init__(
         self,
@@ -366,14 +402,8 @@ class AiboxDataset(keras.utils.PyDataset):
 # %%
 INPUT_SIZE = (1024, 128, 1)
 MAX_TEXT_LENGTH = 128  # @param {type: "number"}
-LEARNING_RATE = 0.005  # @param {type: "number"}
-def ctc_loss(y_true, y_pred):
-    return keras.ops.ctc_loss(
-        y_true,
-        y_pred,
-        keras.ops.count_nonzero(y_true, axis=-1),
-        keras.ops.count_nonzero(keras.ops.argmax(y_pred, axis=-1), axis=-1)
-    )
+LEARNING_RATE = 0.001  # @param {type: "number"}
+
 tokenizer = Tokenizer(maxlen=MAX_TEXT_LENGTH)
 htrflor = HtrFlor(input_size=INPUT_SIZE, logits=len(tokenizer.vocab))
 htrflor.compile(
@@ -394,8 +424,6 @@ train_dataset = AiboxDataset(DATASET_PATH,
                              batch_size=BATCH_SIZE)
 val_dataset = AiboxDataset(DATASET_PATH, split="val", batch_size=BATCH_SIZE, tokenizer=tokenizer)
 test_dataset = AiboxDataset(DATASET_PATH, split="test", batch_size=BATCH_SIZE, tokenizer=tokenizer)
-# %%
-len(test_dataset)
 # %%
 EPOCHS = 5  # @param {type: "number"}
 LOGFILE = "epochs.log"  # @param {type: "string"}
@@ -418,9 +446,6 @@ htrflor.test_on_batch(*test_dataset[0])
 # %%
 CTC_DECODE_STRATEGY = "beam_search"  # @param ["beam_search", "greedy"]
 predictions = htrflor(test_dataset[0][0])
-predictions = np.argmax(predictions, axis=-1)
-predictions
-
 # %%
 predictions, log = keras.ops.ctc_decode(
     predictions,
