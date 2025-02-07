@@ -35,9 +35,7 @@ from keras.api.optimizers import AdamW, RMSprop
 ImageBatch = np.ndarray[("batch", "height", "width", "channels"), np.uint8]
 
 SEED = 42
-random.seed(SEED)
-np.random.seed(SEED)
-tf.random.set_seed(SEED)
+keras.utils.set_random_seed(SEED)
 
 # %%
 DATASET_PATH = "data/dataset/" # @param {type: "string"}
