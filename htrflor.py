@@ -232,10 +232,12 @@ def HtrFlor(input_size: tuple[int, int, int], logits: int) -> Model:
     shape = cnn.shape
     bgru = Reshape((shape[1], shape[2] * shape[3]))(cnn)
 
-    bgru = Bidirectional(GRU(units=128, return_sequences=True, dropout=0.5))(bgru)
+    bgru = Dropout(0.2)(bgru)
+    bgru = Bidirectional(GRU(units=128, return_sequences=True))(bgru)
     bgru = Dense(units=256)(bgru)
 
-    bgru = Bidirectional(GRU(units=128, return_sequences=True, dropout=0.5))(bgru)
+    bgru = Dropout(0.2)(bgru)
+    bgru = Bidirectional(GRU(units=128, return_sequences=True))(bgru)
     output_data = Dense(units=logits)(bgru)
 
     return Model(input_data, output_data, name="HtrFlor")
@@ -256,7 +258,7 @@ def callbacks(
         ModelCheckpoint(
             filepath=checkpoint,
             monitor=monitor,
-            save_best_only=True,
+            save_best_only=False,
             save_weights_only=True,
             verbose=verbose,
         ),
