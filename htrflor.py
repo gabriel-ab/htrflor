@@ -7,7 +7,7 @@ from typing import Literal
 import editdistance
 import h5py
 import keras
-from matplotlib import pyplot as plt
+import cv2 as cv
 import numpy as np
 import tensorflow as tf
 from keras import Model
@@ -254,32 +254,7 @@ def callbacks(
     reduce_factor=0.1,
     reduce_cooldown=0,
 ):
-    return [
-        CSVLogger(filename=logfile, append=True),
-        ModelCheckpoint(
-            filepath=checkpoint,
-            monitor=monitor,
-            save_best_only=False,
-            save_weights_only=True,
-            verbose=verbose,
-        ),
-        EarlyStopping(
-            monitor=monitor,
-            min_delta=1e-8,
-            patience=stop_tolerance,
-            restore_best_weights=True,
-            verbose=verbose,
-        ),
-        ReduceLROnPlateau(
-            monitor=monitor,
-            min_lr=1e-4,
-            min_delta=1e-8,
-            factor=reduce_factor,
-            patience=reduce_tolerance,
-            cooldown=reduce_cooldown,
-            verbose=verbose,
-        ),
-    ]
+    return 
 
 
 def ocr_metrics(ground_truth, predicts, norm_accentuation=False, norm_punctuation=False):
@@ -400,6 +375,58 @@ class AiboxDataset(keras.utils.PyDataset):
             return (len(hf[self.split]['gt']) / self.batch_size).__ceil__()
 
 # %%
+class CharacterMetric(keras.metrics.Metric):
+    def __init__(self, function, **kwargs):
+        super().__init__(name=function.__name__, **kwargs)
+        self.function = function
+        self.sum = self.add_variable((), initializer="zeros")
+        self.count = self.add_variable((), initializer="zeros")
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        value = tf.numpy_function(func=self.function, inp=[y_true, y_pred], Tout=tf.float64)
+        value.set_shape(())
+        self.sum.assign_add(value)
+        self.count.assign_add(1)
+
+    def result(self):
+        return self.sum / self.count
+
+def cer(y_true, y_pred):
+    """Character Error Rate (CER)"""
+    y_true = [tokenizer.untokenize(ids) for ids in y_true]
+    y_pred = [tokenizer.untokenize(ids) for ids in np.argmax(y_pred, -1)]
+    return np.mean([
+        editdistance.distance(ids_true, ids_pred) / max(len(ids_true), len(ids_pred))
+        for ids_true, ids_pred in zip(y_true, y_pred)
+    ])
+
+def wer(y_true, y_pred):
+    """Word Error Rate (WER)"""
+    y_true = [tokenizer.untokenize(ids).split() for ids in y_true]
+    y_pred = [tokenizer.untokenize(ids).split() for ids in np.argmax(y_pred, -1)]
+    return np.mean([
+        editdistance.distance(ids_true, ids_pred) / max(len(ids_true), len(ids_pred))
+        for ids_true, ids_pred in zip(y_true, y_pred)
+    ])
+
+def ser(y_true, y_pred):
+    """Sequence Error Rate (SER)"""
+    y_true = [[tokenizer.untokenize(ids)] for ids in y_true]
+    y_pred = [[tokenizer.untokenize(ids)] for ids in np.argmax(y_pred, -1)]
+    return np.mean([
+        editdistance.distance(ids_true, ids_pred) / max(len(ids_true), len(ids_pred))
+        for ids_true, ids_pred in zip(y_true, y_pred)
+    ])
+
+# ## Testing metrics
+# y_true = np.array([tokenizer.tokenize("gabriel"), tokenizer.tokenize("marcos")])
+# y_pred = np.array([keras.ops.one_hot(tokenizer.tokenize("gbriel"), len(tokenizer.vocab)), keras.ops.one_hot(tokenizer.tokenize("marcos"), len(tokenizer.vocab))])
+# print(cer(y_true, y_pred))
+# print(wer(y_true, y_pred))
+# print(ser(y_true, y_pred))
+# print(ocr_metrics(["gabriel", "marcos"], ["gbriel", "marcos"]))
+
+# %%
 INPUT_SIZE = (1024, 128, 1)
 MAX_TEXT_LENGTH = 128  # @param {type: "number"}
 LEARNING_RATE = 0.001  # @param {type: "number"}
@@ -410,12 +437,13 @@ htrflor.compile(
     # optimizer=AdamW(learning_rate=LEARNING_RATE, weight_decay=0.1),
     optimizer=RMSprop(LEARNING_RATE),
     loss=keras.losses.CTC(),
+    # metrics=[CharacterMetric(cer), CharacterMetric(wer)]
 )
 htrflor.summary()
 # %%
 BATCH_SIZE = 16  # @param {type: "number"}
 TRAIN_DATASET_WORKERS = 1  # @param {type: "number"}
-DATASET_PATH = 'data/sample.hdf5'
+DATASET_PATH = 'data/aibox.hdf5'
 train_dataset = AiboxDataset(DATASET_PATH, 
                              split="train",
                              tokenizer=tokenizer,
@@ -426,26 +454,56 @@ val_dataset = AiboxDataset(DATASET_PATH, split="val", batch_size=BATCH_SIZE, tok
 test_dataset = AiboxDataset(DATASET_PATH, split="test", batch_size=BATCH_SIZE, tokenizer=tokenizer)
 # %%
 EPOCHS = 5  # @param {type: "number"}
-LOGFILE = "epochs.log"  # @param {type: "string"}
-CHECKPOINT = "htrflor-checkpoint.weights.h5"  # @param {type: "string"}
+LOGFILE = "output/train.log"  # @param {type: "string"}
+BEST_ON_TRAINING_CHECKPOINT = "output/htrflor-best-training.weights.h5"  # @param {type: "string"}
+BEST_ON_VALIDATION_CHECKPOINT = "output/htrflor-best-validation.weights.h5"  # @param {type: "string"}
 EARLY_STOPING_TOLERANCE = 5  # @param {type: "number"}
 VERBOSITY = 1  # @param {type: "number"}
 history = htrflor.fit(
     x=train_dataset,
     validation_data=val_dataset,
     epochs=EPOCHS,
-    callbacks=callbacks(
-        logfile=OUTPUT_PATH+LOGFILE,
-        checkpoint=OUTPUT_PATH+CHECKPOINT,
-        stop_tolerance=EARLY_STOPING_TOLERANCE,
-        verbose=VERBOSITY,
-    ),
+    callbacks=[
+        CSVLogger(filename=LOGFILE, append=True),
+        ModelCheckpoint(
+            filepath=BEST_ON_TRAINING_CHECKPOINT,
+            monitor="loss",
+            save_best_only=True,
+            save_weights_only=True,
+            verbose=VERBOSITY,
+        ),
+        ModelCheckpoint(
+            filepath=BEST_ON_VALIDATION_CHECKPOINT,
+            monitor="val_loss",
+            save_best_only=True,
+            save_weights_only=True,
+            verbose=VERBOSITY,
+        ),
+        EarlyStopping(
+            monitor="val_loss",
+            min_delta=1e-8,
+            patience=EARLY_STOPING_TOLERANCE,
+            restore_best_weights=True,
+            verbose=VERBOSITY,
+        ),
+        ReduceLROnPlateau(
+            monitor="val_loss",
+            min_lr=1e-4,
+            min_delta=1e-8,
+            factor=0.1,
+            patience=15,
+            cooldown=0,
+            verbose=VERBOSITY,
+        ),
+    ]
 )
 # %%
-htrflor.test_on_batch(*test_dataset[0])
+test_results = htrflor.evaluate(test_dataset, return_dict=True, callbacks=[
+    CSVLogger("output/test.log")
+])
 # %%
 CTC_DECODE_STRATEGY = "beam_search"  # @param ["beam_search", "greedy"]
-predictions = htrflor(test_dataset[0][0])
+predictions = htrflor.predict(test_dataset[0][0])
 # %%
 predictions, log = keras.ops.ctc_decode(
     predictions,
@@ -456,10 +514,4 @@ predictions, log = keras.ops.ctc_decode(
 predictions = [tokenizer.untokenize([tok for tok in p if tok != -1]) for p in predictions[0].numpy()]
 predictions
 # %%
-cer, wer, ser = ocr_metrics(predictions, test_dataset.text())
-print("Character Error Rate (CER):", cer)
-print("Word Error Rate (WER):     ", wer)
-print("Sequence Error Rate (SER): ", ser)
-# %%
-FINAL_MODEL = "htrflor.keras" # @param {type: "string"}
-htrflor.save(OUTPUT_PATH + FINAL_MODEL)
+htrflor.save("output/htrflor.keras")
