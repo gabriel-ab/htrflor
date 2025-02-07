@@ -366,13 +366,20 @@ class AiboxDataset(keras.utils.PyDataset):
 # %%
 INPUT_SIZE = (1024, 128, 1)
 MAX_TEXT_LENGTH = 128  # @param {type: "number"}
-LEARNING_RATE = 0.01  # @param {type: "number"}
+LEARNING_RATE = 0.005  # @param {type: "number"}
+def ctc_loss(y_true, y_pred):
+    return keras.ops.ctc_loss(
+        y_true,
+        y_pred,
+        keras.ops.count_nonzero(y_true, axis=-1),
+        keras.ops.count_nonzero(keras.ops.argmax(y_pred, axis=-1), axis=-1)
+    )
 tokenizer = Tokenizer(maxlen=MAX_TEXT_LENGTH)
 htrflor = HtrFlor(input_size=INPUT_SIZE, logits=len(tokenizer.vocab))
 htrflor.compile(
-    optimizer=AdamW(learning_rate=LEARNING_RATE, weight_decay=0.1),
+    # optimizer=AdamW(learning_rate=LEARNING_RATE, weight_decay=0.1),
+    optimizer=RMSprop(LEARNING_RATE),
     loss=keras.losses.CTC(),
-    # metrics=["precision"]
 )
 htrflor.summary()
 # %%
@@ -395,7 +402,7 @@ LOGFILE = "epochs.log"  # @param {type: "string"}
 CHECKPOINT = "htrflor-checkpoint.weights.h5"  # @param {type: "string"}
 EARLY_STOPING_TOLERANCE = 5  # @param {type: "number"}
 VERBOSITY = 1  # @param {type: "number"}
-htrflor.fit(
+history = htrflor.fit(
     x=train_dataset,
     validation_data=val_dataset,
     epochs=EPOCHS,
@@ -407,17 +414,22 @@ htrflor.fit(
     ),
 )
 # %%
+htrflor.test_on_batch(*test_dataset[0])
+# %%
 CTC_DECODE_STRATEGY = "beam_search"  # @param ["beam_search", "greedy"]
-predictions = htrflor.predict(test_dataset)
+predictions = htrflor(test_dataset[0][0])
+predictions = np.argmax(predictions, axis=-1)
+predictions
+
+# %%
 predictions, log = keras.ops.ctc_decode(
     predictions,
     np.repeat(predictions.shape[1], predictions.shape[0]),
+    strategy="beam_search",
     beam_width=10,
-    strategy=CTC_DECODE_STRATEGY,
 )
-predictions = np.squeeze(predictions)
-predictions = list(map(tokenizer.untokenize, predictions))
-predictions[:10]
+predictions = [tokenizer.untokenize([tok for tok in p if tok != -1]) for p in predictions[0].numpy()]
+predictions
 # %%
 cer, wer, ser = ocr_metrics(predictions, test_dataset.text())
 print("Character Error Rate (CER):", cer)
