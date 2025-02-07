@@ -434,10 +434,9 @@ LEARNING_RATE = 0.001  # @param {type: "number"}
 tokenizer = Tokenizer(maxlen=MAX_TEXT_LENGTH)
 htrflor = HtrFlor(input_size=INPUT_SIZE, logits=len(tokenizer.vocab))
 htrflor.compile(
-    # optimizer=AdamW(learning_rate=LEARNING_RATE, weight_decay=0.1),
     optimizer=RMSprop(LEARNING_RATE),
     loss=keras.losses.CTC(),
-    # metrics=[CharacterMetric(cer), CharacterMetric(wer)]
+    metrics=[CharacterMetric(cer), CharacterMetric(wer)]
 )
 htrflor.summary()
 # %%
