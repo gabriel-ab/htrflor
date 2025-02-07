@@ -236,7 +236,7 @@ def HtrFlor(input_size: tuple[int, int, int], logits: int) -> Model:
     bgru = Dense(units=256)(bgru)
 
     bgru = Bidirectional(GRU(units=128, return_sequences=True, dropout=0.5))(bgru)
-    output_data = Dense(units=logits, activation="softmax")(bgru)
+    output_data = Dense(units=logits)(bgru)
 
     return Model(input_data, output_data, name="HtrFlor")
 
@@ -388,10 +388,10 @@ test_dataset = AiboxDataset(DATASET_PATH, split="test", batch_size=BATCH_SIZE, t
 # %%
 len(test_dataset)
 # %%
-EPOCHS = 2  # @param {type: "number"}
+EPOCHS = 5  # @param {type: "number"}
 LOGFILE = "epochs.log"  # @param {type: "string"}
 CHECKPOINT = "htrflor-checkpoint.weights.h5"  # @param {type: "string"}
-EARLY_STOPING_TOLERANCE = 20  # @param {type: "number"}
+EARLY_STOPING_TOLERANCE = 5  # @param {type: "number"}
 VERBOSITY = 1  # @param {type: "number"}
 htrflor.fit(
     x=train_dataset,
