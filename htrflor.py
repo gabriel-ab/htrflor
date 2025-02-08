@@ -507,8 +507,8 @@ test_results = htrflor.evaluate(test_dataset, return_dict=True, callbacks=[
 ])
 # %%
 CTC_DECODE_STRATEGY = "beam_search"  # @param ["beam_search", "greedy"]
-predictions = htrflor.predict(test_dataset[0][0])
-# %%
+test_sample = test_dataset[12][0]
+predictions = htrflor.predict(test_sample)
 predictions, log = keras.ops.ctc_decode(
     predictions,
     np.repeat(predictions.shape[1], predictions.shape[0]),
@@ -517,5 +517,15 @@ predictions, log = keras.ops.ctc_decode(
 )
 predictions = [tokenizer.untokenize([tok for tok in p if tok != -1]) for p in predictions[0].numpy()]
 predictions
+
+# %%
+import matplotlib.pyplot as plt
+plt.figure(dpi=300)
+for i, img in enumerate(test_sample):
+    plt.subplot(16, 1, i+1)
+    plt.imshow(10 - img.squeeze().T, 'gray')
+    plt.text(800, i+80, predictions[i])
+    plt.axis('off')
+
 # %%
 htrflor.save("output/htrflor.keras")
