@@ -30,6 +30,8 @@ from keras.api.layers import (
     Reshape,
 )
 from keras.api.optimizers import RMSprop
+from tqdm import tqdm
+import gc
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
@@ -86,10 +88,12 @@ class FullGatedConv2D(Conv2D):
         **kwargs,
     ):
         # O número de filtros é o dobro para acomodar F e G
-        super().__init__(
-            filters * 2, kernel_size, strides=strides, padding=padding, **kwargs
-        )
-        self.nb_filters = filters
+        nb_filters = kwargs.pop('nb_filters', None)
+        if nb_filters is None:
+            nb_filters = filters
+            filters *= 2
+        self.nb_filters = nb_filters
+        super().__init__(filters, kernel_size, strides=strides, padding=padding, **kwargs)
         self.activation = keras.activations.get(activation)
 
     def call(self, inputs):
@@ -396,6 +400,11 @@ class CharacterMetric(keras.metrics.Metric):
     def result(self):
         return self.sum / self.count
 
+    @classmethod
+    def from_config(cls, config):
+        config['function'] = eval(config['name'])
+        return super().from_config(config)
+
 def cer(y_true, y_pred):
     """Character Error Rate (CER)"""
     y_true = [tokenizer.untokenize(ids) for ids in y_true]
@@ -437,6 +446,7 @@ MAX_TEXT_LENGTH = 128  # @param {type: "number"}
 LEARNING_RATE = 0.001  # @param {type: "number"}
 
 tokenizer = Tokenizer(maxlen=MAX_TEXT_LENGTH)
+# %%
 htrflor = HtrFlor(input_size=INPUT_SIZE, logits=len(tokenizer.vocab))
 htrflor.compile(
     optimizer=RMSprop(LEARNING_RATE),
@@ -445,8 +455,8 @@ htrflor.compile(
 )
 htrflor.summary()
 # %%
-BATCH_SIZE = 16  # @param {type: "number"}
-TRAIN_DATASET_WORKERS = 1  # @param {type: "number"}
+BATCH_SIZE = 32 # @param {type: "number"}
+TRAIN_DATASET_WORKERS = 1 # @param {type: "number"}
 DATASET_PATH = 'data/aibox.hdf5'
 train_dataset = AiboxDataset(DATASET_PATH, 
                              split="train",
@@ -506,18 +516,45 @@ test_results = htrflor.evaluate(test_dataset, return_dict=True, callbacks=[
     CSVLogger("output/test.log")
 ])
 # %%
-CTC_DECODE_STRATEGY = "beam_search"  # @param ["beam_search", "greedy"]
+def predict(data):
+    predictions = htrflor.predict(data)
+    predictions, log = keras.ops.ctc_decode(
+        predictions,
+        np.repeat(predictions.shape[1], predictions.shape[0]),
+        strategy="beam_search",
+        beam_width=10,
+    )
+    return [tokenizer.untokenize([tok for tok in p if tok != -1]) for p in predictions[0].numpy()]
+# %%
 test_sample = test_dataset[12][0]
-predictions = htrflor.predict(test_sample)
-predictions, log = keras.ops.ctc_decode(
-    predictions,
-    np.repeat(predictions.shape[1], predictions.shape[0]),
-    strategy="beam_search",
-    beam_width=10,
-)
-predictions = [tokenizer.untokenize([tok for tok in p if tok != -1]) for p in predictions[0].numpy()]
+predictions = predict(test_sample)
 predictions
+# %%
+with h5py.File(DATASET_PATH) as hf:
+    gt = hf['test']['gt'][()]
+len(gt)
+# %%
+results = []
+for i in tqdm(range(len(test_dataset))):
+    batch = test_dataset[i][0]
+    predictions = htrflor(batch, training=False)
+    gc.collect()
+    predictions, log = keras.ops.ctc_decode(
+        predictions,
+        np.repeat(predictions.shape[1], predictions.shape[0]),
+        strategy="greedy",
+        beam_width=10,
+    )
+    predictions = [tokenizer.untokenize([tok for tok in p if tok != -1]) for p in predictions[0].numpy()]
+    results.extend(predictions)
 
+
+# %%
+import pandas as pd
+pd.DataFrame({
+    'word': gt,
+    'pred': predictions
+}).to_csv('output/test-predictions.csv')
 # %%
 import matplotlib.pyplot as plt
 plt.figure(dpi=300)
@@ -529,3 +566,12 @@ for i, img in enumerate(test_sample):
 
 # %%
 htrflor.save("output/htrflor.keras")
+
+# %%
+htrflor = keras.saving.load_model("output/htrflor.keras", custom_objects={
+    FullGatedConv2D.__name__: FullGatedConv2D,
+    CharacterMetric.__name__: CharacterMetric
+})
+# %%
+keras.saving.load_weights(htrflor, "output/htrflor.keras")
+# %%
