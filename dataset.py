@@ -70,31 +70,36 @@ class Tokenizer:
 
 
 # %%
-DATASET_PATH = 'data/dataset/'
+DATASET_PATH = 'data/lines/'
+target = 'aibox-lines-dataset.hdf5'
+max_text_length = 128
 # %%
+process = partial(preprocess, width=1024, height=128, denoise=True, inverse=True)
 def load_dataset_csv(dataset_path, split):
-    df = pd.read_csv(Path(dataset_path) / f"dataset-{split}/words-{split}.csv").dropna()
+    df = pd.read_csv(Path(dataset_path) / f"{split}.csv").dropna()
     df["path"] = dataset_path + df["path"]
     return df
-
-max_text_length = 128
-target = 'aibox.hdf5'
 dfs = {
-    'train': load_dataset_csv(DATASET_PATH, '70-train'),
-    'test': load_dataset_csv(DATASET_PATH, '15-test'),
-    'val': load_dataset_csv(DATASET_PATH, '15-val'),
+    'train': load_dataset_csv(DATASET_PATH, 'train'),
+    'test': load_dataset_csv(DATASET_PATH, 'test'),
+    'val': load_dataset_csv(DATASET_PATH, 'val'),
 }
-process = partial(preprocess, width=1024, height=128, denoise=True, inverse=True)
+print('Tamanhos: %s' % {k: len(v) for k, v in dfs.items()})
+# %%
+import matplotlib.pyplot as plt
+plt.imshow(process(dfs['test']['path'][0]))
 
-batch_per_save = 8*1024
-batch_per_process = 1024
+# %%
+num_workers = 4
+batch_per_process = 256
+batch_per_save = num_workers*batch_per_process
 
 with h5py.File(target, "w") as hf:
     for part in dfs:
         hf.create_dataset(f"{part}/dt", (len(dfs[part]), 1024, 128, 1), np.uint8, compression=9)
         hf.create_dataset(f"{part}/gt", len(dfs[part]), h5py.string_dtype(encoding='utf-8', length=max_text_length), compression=9)
 
-with mp.Pool(8) as pool, tqdm(total=sum(map(len, dfs.values())), desc="Processando Dataset") as pbar:
+with mp.Pool(num_workers) as pool, tqdm(total=sum(map(len, dfs.values())), desc="Processando Dataset") as pbar:
     for part in dfs:
         for start in range(0, len(dfs[part]), batch_per_save):
             end = start + batch_per_save
@@ -105,3 +110,5 @@ with mp.Pool(8) as pool, tqdm(total=sum(map(len, dfs.values())), desc="Processan
                 hf[f"{part}/dt"][start:end] = x
                 hf[f"{part}/gt"][start:end] = y
                 pbar.update(len(y))
+
+# %%
