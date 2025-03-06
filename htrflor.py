@@ -454,8 +454,9 @@ htrflor.compile(
     metrics=[CharacterMetric(cer), CharacterMetric(wer)]
 )
 htrflor.summary()
+keras.saving.load_weights(htrflor, "output/htrflor.keras")
 # %%
-BATCH_SIZE = 32 # @param {type: "number"}
+BATCH_SIZE = 16 # @param {type: "number"}
 TRAIN_DATASET_WORKERS = 1 # @param {type: "number"}
 DATASET_PATH = 'data/aibox.hdf5'
 train_dataset = AiboxDataset(DATASET_PATH, 
@@ -518,41 +519,37 @@ test_results = htrflor.evaluate(test_dataset, return_dict=True, callbacks=[
 # %%
 def predict(data):
     predictions = htrflor.predict(data)
-    predictions, log = keras.ops.ctc_decode(
-        predictions,
-        np.repeat(predictions.shape[1], predictions.shape[0]),
-        strategy="beam_search",
-        beam_width=10,
-    )
-    return [tokenizer.untokenize([tok for tok in p if tok != -1]) for p in predictions[0].numpy()]
+    size = len(predictions)
+    results = []
+    lengths = np.repeat(predictions.shape[1], 32)
+    for start in tqdm(range(0, size, 32)):
+        end = min(start + 32, size)
+        predictions_batch = predictions[start:end]
+        predictions, log = keras.ops.ctc_decode(
+            predictions_batch,
+            lengths if end != size else lengths[:len(predictions_batch)],
+            strategy="beam_search",
+            beam_width=10,
+        )
+        results.extend(tokenizer.untokenize([tok for tok in p if tok != -1]) for p in predictions[0].numpy())
+    return results
 # %%
 test_sample = test_dataset[12][0]
 predictions = predict(test_sample)
 predictions
 # %%
+predictions = predict(test_dataset)
+predictions[:10]
+# %%
 with h5py.File(DATASET_PATH) as hf:
     gt = hf['test']['gt'][()]
 len(gt)
-# %%
-results = []
-for i in tqdm(range(len(test_dataset))):
-    batch = test_dataset[i][0]
-    predictions = htrflor(batch, training=False)
-    gc.collect()
-    predictions, log = keras.ops.ctc_decode(
-        predictions,
-        np.repeat(predictions.shape[1], predictions.shape[0]),
-        strategy="greedy",
-        beam_width=10,
-    )
-    predictions = [tokenizer.untokenize([tok for tok in p if tok != -1]) for p in predictions[0].numpy()]
-    results.extend(predictions)
 
 
 # %%
 import pandas as pd
 pd.DataFrame({
-    'word': gt,
+    'word': [word.decode() for word in gt],
     'pred': predictions
 }).to_csv('output/test-predictions.csv')
 # %%
@@ -574,4 +571,5 @@ htrflor = keras.saving.load_model("output/htrflor.keras", custom_objects={
 })
 # %%
 keras.saving.load_weights(htrflor, "output/htrflor.keras")
+# keras.saving.load_weights(htrflor, "output/htrflor-best-validation.weights.h5")
 # %%
